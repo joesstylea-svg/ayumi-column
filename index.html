@@ -690,7 +690,9 @@ textarea.fi{min-height:72px;resize:vertical;}
       <button class="quick-memo-btn" onclick="addQuickMemo()">追加</button>
     </div>
     <!-- Cards -->
-    <div class="content-panel" id="contentPanel"></div>
+    <div class="content-panel" id="contentPanel">
+      <div id="loadingState" style="text-align:center;padding:60px 20px;color:var(--muted);font-size:14px;">読み込み中…</div>
+    </div>
   </div>
 </div>
 
@@ -773,7 +775,8 @@ async function syncToSupabase(){
     await sb.from('musubi_items').upsert(rows,{onConflict:'id'});
     await sb.from('musubi_settings').upsert([
       {key:'tags',value:JSON.stringify(TAGS)},
-      {key:'tag_colors',value:JSON.stringify(TAG_C)}
+      {key:'tag_colors',value:JSON.stringify(TAG_C)},
+      {key:'note_groups',value:JSON.stringify(NOTE_GROUPS)}
     ],{onConflict:'key'});
   }catch(e){console.warn('Supabase sync failed:',e);}
 }
@@ -811,6 +814,8 @@ async function loadFromSupabase(){
       const c=settings.find(s=>s.key==='tag_colors');
       if(t?.value){TAGS=JSON.parse(t.value);localStorage.setItem('musubi_tags',JSON.stringify(TAGS));}
       if(c?.value){TAG_C=JSON.parse(c.value);localStorage.setItem('musubi_tag_colors',JSON.stringify(TAG_C));}
+      const ng=settings.find(s=>s.key==='note_groups');
+      if(ng?.value){NOTE_GROUPS=JSON.parse(ng.value);localStorage.setItem('musubi_note_groups',JSON.stringify(NOTE_GROUPS));}
     }
     showToast('同期完了 ✓');
   }catch(e){
@@ -820,7 +825,11 @@ async function loadFromSupabase(){
   render();
 }
 
-const NOTE_GROUPS=["ワークショップ入門","集客の基本","マインドセット"];
+let NOTE_GROUPS=JSON.parse(localStorage.getItem('musubi_note_groups')||'null')||["ワークショップ入門","集客の基本","マインドセット"];
+function saveNoteGroupsData(){
+  localStorage.setItem('musubi_note_groups',JSON.stringify(NOTE_GROUPS));
+  syncToSupabase();
+}
 
 // タグカラーのプリセットパレット（背景色, 文字色）
 const TAG_PALETTE=[
@@ -1688,6 +1697,31 @@ function renderSettings(){
     <div class="settings-title">設定</div>
 
     <div class="settings-card">
+      <div class="settings-card-title">📓 Noteグループ管理</div>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:12px;">ドラッグで並び替え、名前をクリックで編集</p>
+      <div class="tag-manager-list" id="ngManagerList">${NOTE_GROUPS.map((g,i)=>`
+        <div class="tag-manager-row" id="ngr_${i}"
+          draggable="true"
+          ondragstart="ngDragStart(${i})"
+          ondragover="ngDragOver(event,${i})"
+          ondrop="ngDrop(event,${i})"
+          ondragend="ngDragEnd()">
+          <span class="tag-drag-h">⠿</span>
+          <input class="tag-name-input" id="ngi_${i}" value="${esc(g)}"
+            onblur="renameNoteGroup(${i},this.value)"
+            onkeydown="if(event.key==='Enter')this.blur()">
+          <span class="tag-cnt-badge">${items.filter(it=>it.noteGroup===g).length}件</span>
+          <button class="tag-del-btn" onclick="deleteNoteGroup(${i})" title="削除">✕</button>
+        </div>`).join('')}
+      </div>
+      <div class="tag-add-row">
+        <input class="tag-add-input" id="ngAddInput" placeholder="新しいグループ名を入力"
+          onkeydown="if(event.key==='Enter')addNoteGroup()">
+        <button class="tag-add-btn" onclick="addNoteGroup()">＋ 追加</button>
+      </div>
+    </div>
+
+    <div class="settings-card">
       <div class="settings-card-title">🏷️ タグ管理</div>
       <p style="font-size:13px;color:var(--muted);margin-bottom:12px;">ドラッグで並び替え、タグ名をクリックで編集、色の丸をクリックで色変更</p>
       <div class="tag-manager-list" id="tagManagerList">${tagRows}</div>
@@ -1724,6 +1758,58 @@ function renderSettings(){
   // タグセレクトを埋める
   const sel=document.getElementById('bulkImportTag');
   if(sel) TAGS.forEach(t=>{const o=document.createElement('option');o.value=t;o.textContent=t;sel.appendChild(o);});
+}
+
+// ── NOTE GROUP MANAGEMENT ──
+let ngDragging=null;
+
+function addNoteGroup(){
+  const inp=document.getElementById('ngAddInput');
+  const name=inp.value.trim();
+  if(!name) return;
+  if(NOTE_GROUPS.includes(name)){showToast('同じ名前のグループがあります');return;}
+  NOTE_GROUPS.push(name);
+  inp.value='';
+  saveNoteGroupsData();render();showToast(`グループ「${name}」を追加しました`);
+}
+
+function renameNoteGroup(i,newName){
+  newName=newName.trim();
+  const old=NOTE_GROUPS[i];
+  if(!newName||newName===old) return;
+  if(NOTE_GROUPS.includes(newName)){showToast('同じ名前のグループがあります');render();return;}
+  NOTE_GROUPS[i]=newName;
+  items=items.map(it=>it.noteGroup===old?{...it,noteGroup:newName}:it);
+  save();saveNoteGroupsData();render();showToast(`「${old}」→「${newName}」に変更しました`);
+}
+
+function deleteNoteGroup(i){
+  const name=NOTE_GROUPS[i];
+  const cnt=items.filter(it=>it.noteGroup===name).length;
+  const msg=cnt>0?`グループ「${name}」を削除しますか？\n（${cnt}件のネタはグループ未設定になります）`:`グループ「${name}」を削除しますか？`;
+  if(!confirm(msg)) return;
+  NOTE_GROUPS.splice(i,1);
+  items=items.map(it=>it.noteGroup===name?{...it,noteGroup:''}:it);
+  save();saveNoteGroupsData();render();showToast(`グループ「${name}」を削除しました`);
+}
+
+function ngDragStart(i){ngDragging=i;document.getElementById('ngr_'+i)?.classList.add('dragging');}
+function ngDragOver(e,i){
+  e.preventDefault();
+  document.querySelectorAll('#ngManagerList .tag-manager-row').forEach(r=>r.classList.remove('drag-over-tag'));
+  document.getElementById('ngr_'+i)?.classList.add('drag-over-tag');
+}
+function ngDrop(e,toI){
+  e.preventDefault();
+  if(ngDragging===null||ngDragging===toI) return;
+  const moved=NOTE_GROUPS.splice(ngDragging,1)[0];
+  NOTE_GROUPS.splice(toI,0,moved);
+  ngDragging=null;
+  saveNoteGroupsData();render();
+}
+function ngDragEnd(){
+  ngDragging=null;
+  document.querySelectorAll('#ngManagerList .tag-manager-row').forEach(r=>r.classList.remove('dragging','drag-over-tag'));
 }
 
 // ── TAG MANAGEMENT ──
@@ -1817,8 +1903,9 @@ function esc(s){
 
 // Init
 document.addEventListener('scroll',hideCtx,true);
-render(); // localStorageで即表示
-loadFromSupabase(); // Supabaseから最新データを非同期取得して再描画
+// Supabaseから読み込んでから1回だけrender（スマホのちらつき防止）
+const _initTimer=setTimeout(()=>{render();},2500); // 2.5秒でタイムアウトしてローカルで表示
+loadFromSupabase().then(()=>clearTimeout(_initTimer)).catch(()=>{clearTimeout(_initTimer);render();});
 
 // Modal bg click to close
 document.getElementById('modalBg').addEventListener('click', function(e){
