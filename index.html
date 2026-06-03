@@ -628,6 +628,7 @@ textarea.fi{min-height:72px;resize:vertical;}
     <button class="hdr-nav-item" id="navPosted" onclick="setPage('posted')">📋 投稿済み</button>
     <button class="hdr-nav-item" id="navNote" onclick="setPage('note')">📓 Noteまとめ</button>
     <button class="hdr-nav-item" id="navSettings" onclick="setPage('settings')">⚙️ 設定</button>
+    <button class="hdr-nav-item" onclick="loadFromSupabase()" title="最新データに同期">🔄 同期</button>
   </nav>
   <button class="hamburger" id="hamburger" onclick="toggleMobileMenu()">☰</button>
 </header>
@@ -783,27 +784,35 @@ async function deleteFromSupabase(id){
 }
 
 async function loadFromSupabase(){
-  showToast('データを読み込み中…');
+  showToast('同期中…');
   try{
-    const[{data:rows},{data:settings}]=await Promise.all([
+    const[{data:rows,error:e1},{data:settings,error:e2}]=await Promise.all([
       sb.from('musubi_items').select('*').order('sort_order'),
       sb.from('musubi_settings').select('*')
     ]);
+    if(e1||e2) throw e1||e2;
+
     if(rows&&rows.length>0){
+      // Supabaseにデータあり → ローカルを上書き
       items=rows.map(r=>({
         id:r.id,title:r.title,body:r.body||'',
         tag:r.tag||TAGS[0],status:r.status||'draft',
         postDate:r.post_date||'',noteGroup:r.note_group||''
       }));
       localStorage.setItem('musubi_v3',JSON.stringify(items));
+    } else if(items.length>0){
+      // Supabaseが空 → ローカルのデータをSupabaseへアップロード
+      showToast('初回同期中…');
+      await syncToSupabase();
     }
+
     if(settings){
       const t=settings.find(s=>s.key==='tags');
       const c=settings.find(s=>s.key==='tag_colors');
       if(t?.value){TAGS=JSON.parse(t.value);localStorage.setItem('musubi_tags',JSON.stringify(TAGS));}
       if(c?.value){TAG_C=JSON.parse(c.value);localStorage.setItem('musubi_tag_colors',JSON.stringify(TAG_C));}
     }
-    showToast('読み込み完了');
+    showToast('同期完了 ✓');
   }catch(e){
     console.warn('Supabase load failed, using localStorage:',e);
     showToast('オフラインモード');
