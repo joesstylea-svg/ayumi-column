@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>MUSUBI コンテンツ管理</title>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;600;700&family=Noto+Serif+JP:wght@500;600;700&family=Shippori+Mincho+B1:wght@600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -612,6 +612,51 @@ textarea.fi{min-height:72px;resize:vertical;}
 @media(max-width:480px){
   .stats-grid{grid-template-columns:1fr 1fr;}
   .stat-num{font-size:18px;}
+}
+
+/* ── MOBILE WRITING OPTIMIZED ── */
+@media(max-width:899px){
+  /* カードヘッダー：タイトルコピーボタンを非表示 */
+  .act-copy{display:none;}
+
+  /* カードタイトル：1行に収める */
+  .card-ttl{
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    max-width:calc(100vw - 120px);
+  }
+
+  /* プレビューテキスト：1行 */
+  .card-preview{max-width:calc(100vw - 100px);}
+
+  /* カード展開エリア：画面幅にフィット */
+  .card-body{padding:14px;}
+  .card-body .fi-row{flex-direction:column;gap:0;}
+  .card-body .fi-row .fi-g{width:100%;}
+  .card-body .fi-g .fi{margin-bottom:10px;}
+
+  /* アクションボタン：縦並びに */
+  .card-action-row{
+    flex-direction:column;align-items:stretch;gap:8px;
+  }
+  .card-action-row .btn-save{width:100%;padding:13px;font-size:15px;}
+  .card-action-row .btn-cp-full,
+  .card-action-row .btn-cp-ai{padding:11px;text-align:center;}
+  .card-action-row .btn-cancel{text-align:center;padding:10px;}
+
+  /* クイックメモ入力 */
+  .quick-memo{padding:10px 12px;}
+  .quick-memo-btn{padding:9px 12px;font-size:13px;}
+
+  /* タブ・タグ：スクロールしやすく */
+  .tab-btn{padding:10px 13px;font-size:13px;}
+  .tag-pill{padding:5px 12px;font-size:12px;}
+
+  /* サイドバーのStats：3列 */
+  .stats-grid{grid-template-columns:repeat(3,1fr);}
+
+  /* モーダルのフォームも縦並び */
+  .modal-box .fi-row{flex-direction:column;gap:0;}
+  .modal-box .fi-g .fi{margin-bottom:10px;}
 }
 </style>
 </head>
