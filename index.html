@@ -306,9 +306,11 @@ body{
 .st-bodydone{color:#111111;font-weight:600;}
 .st-note{color:#333333;}
 .st-draft{color:var(--muted);}
-.icard.writing{border-left:3px solid #888888;}
 .icard.writing_draft{border-left:3px solid #CCCCCC;}
+.icard.writing{border-left:3px solid #888888;}
 .icard.body_done{border-left:3px solid #111111;}
+.icard.scheduled{border-left:3px solid #999999;}
+.icard.posted{border-left:3px solid var(--green) !important;}
 .icard.note_posted{border-left:3px solid #333333;}
 .memo-b{font-size:12px;color:var(--muted);background:var(--surface-soft);border:1px solid var(--border);border-radius:4px;padding:2px 8px;}
 .card-acts{display:flex;align-items:center;gap:3px;flex-shrink:0;}
@@ -687,7 +689,7 @@ textarea.fi{min-height:72px;resize:vertical;}
     <button class="hdr-nav-item" id="navPosted" onclick="setPage('posted')">📋 投稿済み</button>
     <button class="hdr-nav-item" id="navNote" onclick="setPage('note')">📓 Noteまとめ</button>
     <button class="hdr-nav-item" id="navSettings" onclick="setPage('settings')">⚙️ 設定</button>
-    <button class="hdr-nav-item" onclick="loadFromSupabase()" title="最新データに同期">🔄 同期</button>
+    <button class="hdr-nav-item" onclick="manualSync()" title="データを同期">🔄 同期</button>
   </nav>
   <button class="hamburger" id="hamburger" onclick="toggleMobileMenu()">☰</button>
 </header>
@@ -821,28 +823,48 @@ const sb=supabase.createClient(SB_URL,SB_KEY);
 async function syncToSupabase(){
   try{
     const rows=items.map((item,idx)=>({
-      id:Number(item.id),
-      title:item.title,
+      id:Math.floor(Number(item.id)),  // 整数に変換
+      title:item.title||'',
       body:item.body||'',
       tag:item.tag||'',
       status:item.status||'draft',
       post_date:item.postDate||'',
       note_group:item.noteGroup||'',
-      sort_order:idx,
-      updated_at:new Date().toISOString()
+      sort_order:idx
+      // updated_at は DB の DEFAULT に任せる
     }));
-    await sb.from('musubi_items').upsert(rows,{onConflict:'id'});
-    await sb.from('musubi_settings').upsert([
+    const {error:e1}=await sb.from('musubi_items').upsert(rows,{onConflict:'id'});
+    if(e1) console.warn('items upsert error:',e1);
+    const {error:e2}=await sb.from('musubi_settings').upsert([
       {key:'tags',value:JSON.stringify(TAGS)},
       {key:'tag_colors',value:JSON.stringify(TAG_C)},
       {key:'note_groups',value:JSON.stringify(NOTE_GROUPS)}
     ],{onConflict:'key'});
+    if(e2) console.warn('settings upsert error:',e2);
   }catch(e){console.warn('Supabase sync failed:',e);}
 }
 
 async function deleteFromSupabase(id){
-  try{await sb.from('musubi_items').delete().eq('id',Number(id));}
+  try{await sb.from('musubi_items').delete().eq('id',Math.floor(Number(id)));}
   catch(e){console.warn('Supabase delete failed:',e);}
+}
+
+async function manualSync(){
+  // 手動同期：件数が多い方を正として双方向マージ
+  showToast('同期中…');
+  try{
+    const {data:rows}=await sb.from('musubi_items').select('*').order('sort_order');
+    if(rows&&rows.length>items.length){
+      // Supabaseの方が多い → ダウンロード
+      items=rows.map(r=>({id:r.id,title:r.title,body:r.body||'',tag:r.tag||TAGS[0],status:r.status||'draft',postDate:r.post_date||'',noteGroup:r.note_group||''}));
+      localStorage.setItem('musubi_v3',JSON.stringify(items));
+      render();showToast('Supabaseから同期しました ✓');
+    } else {
+      // ローカルの方が多い → アップロード
+      await syncToSupabase();
+      showToast('Supabaseへ保存しました ✓');
+    }
+  }catch(e){showToast('同期失敗 — オフラインモード');console.warn(e);}
 }
 
 async function loadFromSupabase(){
@@ -855,16 +877,21 @@ async function loadFromSupabase(){
     if(e1||e2) throw e1||e2;
 
     if(rows&&rows.length>0){
-      // Supabaseにデータあり → ローカルを上書き
-      items=rows.map(r=>({
-        id:r.id,title:r.title,body:r.body||'',
-        tag:r.tag||TAGS[0],status:r.status||'draft',
-        postDate:r.post_date||'',noteGroup:r.note_group||''
-      }));
-      localStorage.setItem('musubi_v3',JSON.stringify(items));
+      // Supabaseにデータあり かつ ローカルより多い → Supabaseを使う
+      if(rows.length >= items.length){
+        items=rows.map(r=>({
+          id:r.id,title:r.title,body:r.body||'',
+          tag:r.tag||TAGS[0],status:r.status||'draft',
+          postDate:r.post_date||'',noteGroup:r.note_group||''
+        }));
+        localStorage.setItem('musubi_v3',JSON.stringify(items));
+      } else {
+        // ローカルの方が多い → ローカルをSupabaseへ
+        await syncToSupabase();
+      }
     } else if(items.length>0){
       // Supabaseが空 → ローカルのデータをSupabaseへアップロード
-      showToast('初回同期中…');
+      showToast('初回アップロード中…');
       await syncToSupabase();
     }
 
@@ -1627,11 +1654,12 @@ function renderCard(item){
 
   return `
 <div class="icard${
-  item.status==='posted'?' posted':
   item.status==='note_posted'?' note_posted':
+  item.status==='posted'?' posted':
+  item.status==='scheduled'?' scheduled':
+  item.status==='body_done'?' body_done':
   item.status==='writing'?' writing':
-  item.status==='writing_draft'?' writing_draft':
-  item.status==='body_done'?' body_done':''}" id="card_${item.id}"
+  item.status==='writing_draft'?' writing_draft':''}" id="card_${item.id}"
   draggable="true"
   ondragstart="onDragStart(${item.id})"
   ondragover="onDragOver(event,${item.id})"
