@@ -820,8 +820,40 @@ const SB_URL='https://xlndaswechgrukfxtpbk.supabase.co';
 const SB_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhsbmRhc3dlY2hncnVrZnh0cGJrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3ODc0MjcsImV4cCI6MjA5NTM2MzQyN30.FYKXsG6rsZkC7LJAJkuup31i1HKGjBfJoIMH6t4AAcE';
 const sb=supabase.createClient(SB_URL,SB_KEY);
 
+function normalizeItemIds(){
+  const used=new Set();
+  let next=Date.now();
+  items=items.map(item=>{
+    let id=Math.floor(Number(item.id));
+    if(!Number.isFinite(id)||id<=0||used.has(id)){
+      while(used.has(next)) next++;
+      id=next++;
+    }
+    used.add(id);
+    return item.id===id?item:{...item,id};
+  });
+}
+
+function mergeLocalOnlyItems(localItems,cloudItems){
+  const cloudTitles=new Set(cloudItems.map(i=>(i.title||'').trim()).filter(Boolean));
+  const cloudIds=new Set(cloudItems.map(i=>Math.floor(Number(i.id))).filter(Number.isFinite));
+  const toRecover=[];
+  localItems.forEach(item=>{
+    const title=(item.title||'').trim();
+    const id=Math.floor(Number(item.id));
+    if(title&&!cloudTitles.has(title)&&!cloudIds.has(id)){
+      cloudTitles.add(title);
+      toRecover.push({...item,title});
+    }
+  });
+  return {items:[...cloudItems,...toRecover],recovered:toRecover.length};
+}
+
 async function syncToSupabase(){
   try{
+    normalizeItemIds();
+    localStorage.setItem('musubi_v3',JSON.stringify(items));
+    const syncedAt=new Date().toISOString();
     const rows=items.map((item,idx)=>({
       id:Math.floor(Number(item.id)),  // 整数に変換
       title:item.title||'',
@@ -830,18 +862,20 @@ async function syncToSupabase(){
       status:item.status||'draft',
       post_date:item.postDate||'',
       note_group:item.noteGroup||'',
-      sort_order:idx
-      // updated_at は DB の DEFAULT に任せる
+      sort_order:idx,
+      updated_at:syncedAt
     }));
     const {error:e1}=await sb.from('musubi_items').upsert(rows,{onConflict:'id'});
-    if(e1) console.warn('items upsert error:',e1);
+    if(e1) throw e1;
     const {error:e2}=await sb.from('musubi_settings').upsert([
       {key:'tags',value:JSON.stringify(TAGS)},
       {key:'tag_colors',value:JSON.stringify(TAG_C)},
       {key:'note_groups',value:JSON.stringify(NOTE_GROUPS)}
     ],{onConflict:'key'});
-    if(e2) console.warn('settings upsert error:',e2);
-  }catch(e){console.warn('Supabase sync failed:',e);}
+    if(e2) throw e2;
+    localStorage.setItem('musubi_last_cloud_sync',syncedAt);
+    return true;
+  }catch(e){console.warn('Supabase sync failed:',e);return false;}
 }
 
 async function deleteFromSupabase(id){
@@ -850,26 +884,18 @@ async function deleteFromSupabase(id){
 }
 
 async function manualSync(){
-  // 手動同期：件数が多い方を正として双方向マージ
+  // 手動同期：クラウドを共有元として、この端末へ反映
   showToast('同期中…');
   try{
-    const {data:rows}=await sb.from('musubi_items').select('*').order('sort_order');
-    if(rows&&rows.length>items.length){
-      // Supabaseの方が多い → ダウンロード
-      items=rows.map(r=>({id:r.id,title:r.title,body:r.body||'',tag:r.tag||TAGS[0],status:r.status||'draft',postDate:r.post_date||'',noteGroup:r.note_group||''}));
-      localStorage.setItem('musubi_v3',JSON.stringify(items));
-      render();showToast('Supabaseから同期しました ✓');
-    } else {
-      // ローカルの方が多い → アップロード
-      await syncToSupabase();
-      showToast('Supabaseへ保存しました ✓');
-    }
+    await loadFromSupabase({silent:true});
+    showToast('Supabaseから同期しました ✓');
   }catch(e){showToast('同期失敗 — オフラインモード');console.warn(e);}
 }
 
-async function loadFromSupabase(){
-  showToast('同期中…');
+async function loadFromSupabase(options={}){
+  if(!options.silent) showToast('同期中…');
   try{
+    const localItems=Array.isArray(items)?items.map(i=>({...i})):[];
     const[{data:rows,error:e1},{data:settings,error:e2}]=await Promise.all([
       sb.from('musubi_items').select('*').order('sort_order'),
       sb.from('musubi_settings').select('*')
@@ -877,17 +903,20 @@ async function loadFromSupabase(){
     if(e1||e2) throw e1||e2;
 
     if(rows&&rows.length>0){
-      // Supabaseにデータあり かつ ローカルより多い → Supabaseを使う
-      if(rows.length >= items.length){
-        items=rows.map(r=>({
-          id:r.id,title:r.title,body:r.body||'',
-          tag:r.tag||TAGS[0],status:r.status||'draft',
-          postDate:r.post_date||'',noteGroup:r.note_group||''
-        }));
-        localStorage.setItem('musubi_v3',JSON.stringify(items));
-      } else {
-        // ローカルの方が多い → ローカルをSupabaseへ
+      // Supabaseにデータがある場合は、クラウドを共有元として使う
+      const cloudItems=rows.map(r=>({
+        id:r.id,title:r.title,body:r.body||'',
+        tag:r.tag||TAGS[0],status:r.status||'draft',
+        postDate:r.post_date||'',noteGroup:r.note_group||''
+      }));
+      const merged=mergeLocalOnlyItems(localItems,cloudItems);
+      items=merged.items;
+      normalizeItemIds();
+      localStorage.setItem('musubi_v3',JSON.stringify(items));
+      localStorage.setItem('musubi_last_cloud_sync',new Date().toISOString());
+      if(merged.recovered>0){
         await syncToSupabase();
+        showToast(`${merged.recovered}件をSupabaseへ同期しました ✓`);
       }
     } else if(items.length>0){
       // Supabaseが空 → ローカルのデータをSupabaseへアップロード
@@ -903,10 +932,10 @@ async function loadFromSupabase(){
       const ng=settings.find(s=>s.key==='note_groups');
       if(ng?.value){NOTE_GROUPS=JSON.parse(ng.value);localStorage.setItem('musubi_note_groups',JSON.stringify(NOTE_GROUPS));}
     }
-    showToast('同期完了 ✓');
+    if(!options.silent) showToast('同期完了 ✓');
   }catch(e){
     console.warn('Supabase load failed, using localStorage:',e);
-    showToast('オフラインモード');
+    if(!options.silent) showToast('オフラインモード');
   }
   render();
 }
@@ -1118,7 +1147,7 @@ let expandedIds=new Set();
 let draggingId=null;
 const today=new Date().toISOString().split('T')[0];
 
-function save(){localStorage.setItem('musubi_v3',JSON.stringify(items));syncToSupabase();}
+function save(){normalizeItemIds();localStorage.setItem('musubi_v3',JSON.stringify(items));return syncToSupabase();}
 
 function showToast(msg){
   const t=document.getElementById('toast');
@@ -1479,36 +1508,39 @@ function onDrop(e,toId){
 function onDragEnd(){draggingId=null;document.querySelectorAll('.icard').forEach(c=>c.classList.remove('dragging','drag-over'));}
 
 // ── BULK IMPORT ──
-function bulkImport(){
+async function bulkImport(){
   const raw=document.getElementById('bulkImportText').value;
   const tag=document.getElementById('bulkImportTag').value||TAGS[0];
   if(!raw.trim()){showToast('テキストを入力してください');return;}
   const existing=new Set(items.map(i=>i.title));
   const lines=raw.split('\n').map(l=>l.trim()).filter(Boolean);
   const toAdd=[];
+  const base=Date.now();
   lines.forEach(line=>{
     // 「01｜タイトル」「1. タイトル」「- タイトル」など番号・記号を除去
     const title=line.replace(/^[\d０-９]+[｜|．.\-\s。、]+/,'').trim();
     if(title&&!existing.has(title)){
       existing.add(title);
-      toAdd.push({id:Date.now()+Math.random(),title,body:'',tag,status:'draft',postDate:'',noteGroup:''});
+      toAdd.push({id:base+toAdd.length,title,body:'',tag,status:'draft',postDate:'',noteGroup:''});
     }
   });
   if(toAdd.length===0){showToast('追加できる新しいタイトルがありませんでした');return;}
   items=[...items,...toAdd];
-  save();
+  const synced=await save();
   document.getElementById('bulkImportText').value='';
   render();
-  showToast(`${toAdd.length}件追加しました！`);
+  showToast(synced?`${toAdd.length}件追加して同期しました！`:`${toAdd.length}件を端末に保存しました（同期未完了）`);
 }
 
 // ── LOAD NETA 50 ──
-function loadNeta50(){
+async function loadNeta50(){
   const existing=new Set(items.map(i=>i.title));
-  const toAdd=NETA_50.filter(n=>!existing.has(n.title)).map(n=>({...n,id:Date.now()+Math.random()}));
+  const base=Date.now();
+  const toAdd=NETA_50.filter(n=>!existing.has(n.title)).map((n,i)=>({...n,id:base+i}));
   if(toAdd.length===0){showToast('すべて読み込み済みです');return;}
   items=[...items,...toAdd];
-  save();render();showToast(`${toAdd.length}件のネタ案を追加しました！`);
+  const synced=await save();
+  render();showToast(synced?`${toAdd.length}件のネタ案を追加して同期しました！`:`${toAdd.length}件を端末に保存しました（同期未完了）`);
 }
 
 // ── EXPORT ──
